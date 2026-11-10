@@ -1,0 +1,1228 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>XGBoost, One Tree at a Time</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a lab notebook. One readable prose column (~68ch) that widens into
+   full-bleed "lab benches" for each interactive, with a guide card riding beside the chart. */
+:root {
+  --paper: #F2F5F4;      /* cool grey-green page */
+  --surface: #FFFFFF;    /* lab bench / cards */
+  --sunk: #E9EEED;       /* inset wells */
+  --ink: #13222B;        /* text, actual data points */
+  --muted: #586A71;      /* secondary text, axes */
+  --line: #D3DCDB;       /* rules and borders */
+  --grid: #E3E9E8;       /* chart grid */
+  --leaf: #0C7A63;       /* predictions, accent */
+  --leaf-soft: #D5EEE7;
+  --resid: #CC5420;      /* residuals / errors */
+  --resid-soft: #F8E2D6;
+  --left: #2C6BAE;       /* left branch */
+  --left-soft: #DCE8F5;
+  --right: #7547B0;      /* right branch */
+  --right-soft: #EAE1F5;
+  --good: #1D7F45;
+  --warn: #A45A00;
+
+  --f-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --s-xs: .8125rem; --s-sm: .9rem; --s-md: 1.0625rem; --s-lg: 1.375rem; --s-xl: 1.875rem; --s-xxl: clamp(2.3rem, 6vw, 3.6rem);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0E161B; --surface: #152129; --sunk: #1B2A33; --ink: #E3ECEE; --muted: #93A5AC;
+    --line: #293A44; --grid: #1D2C35; --leaf: #3DC4A0; --leaf-soft: #17372F; --resid: #F28A54; --resid-soft: #3A2419;
+    --left: #6FA8E8; --left-soft: #1A2D42; --right: #B596EA; --right-soft: #2B2140; --good: #5BCB86; --warn: #E7A94F;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0E161B; --surface: #152129; --sunk: #1B2A33; --ink: #E3ECEE; --muted: #93A5AC;
+  --line: #293A44; --grid: #1D2C35; --leaf: #3DC4A0; --leaf-soft: #17372F; --resid: #F28A54; --resid-soft: #3A2419;
+  --left: #6FA8E8; --left-soft: #1A2D42; --right: #B596EA; --right-soft: #2B2140; --good: #5BCB86; --warn: #E7A94F;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; animation: none !important; } }
+body {
+  background: var(--paper); color: var(--ink);
+  font-family: var(--f-body); font-size: var(--s-md); line-height: 1.62;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1, h2, h3, h4 { font-family: var(--f-display); text-wrap: balance; line-height: 1.12; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: var(--s-xl); font-weight: 800; }
+h3 { font-size: var(--s-lg); font-weight: 700; }
+h4 { font-size: var(--s-md); font-weight: 700; }
+p { margin: 0; }
+a { color: var(--leaf); }
+code, .mono { font-family: var(--f-mono); font-size: .92em; }
+p code, td code { overflow-wrap: anywhere; }
+:focus-visible { outline: 2px solid var(--leaf); outline-offset: 2px; border-radius: 4px; }
+
+.col { width: 100%; max-width: 44rem; margin-inline: auto; min-width: 0; }
+.wide { width: 100%; max-width: 72rem; margin-inline: auto; min-width: 0; }
+.stack { display: flex; flex-direction: column; gap: 1.1rem; }
+section.part { padding-block: 3.5rem 1rem; display: flex; flex-direction: column; gap: 1.6rem; }
+
+.eyebrow { font-family: var(--f-mono); font-size: var(--s-xs); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.part-head { display: flex; flex-direction: column; gap: .5rem; }
+.part-num { font-family: var(--f-mono); font-size: var(--s-xs); letter-spacing: .08em; text-transform: uppercase; color: var(--leaf); }
+
+/* ---------- Hero ---------- */
+.hero { padding-block: 3.5rem 2rem; }
+.hero-inner { display: flex; flex-direction: column; gap: 1.25rem; }
+.hero h1 { font-size: var(--s-xxl); font-weight: 800; letter-spacing: -0.025em; max-width: 16ch; }
+.hero .lede { font-size: 1.15rem; max-width: 40rem; color: var(--ink); }
+.hero-eq { margin-top: .75rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.1rem 1.2rem; overflow-x: auto; }
+.hero-eq svg { display: block; min-width: 560px; width: 100%; height: auto; }
+.toc { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .25rem; }
+.toc a { font-family: var(--f-mono); font-size: var(--s-xs); text-decoration: none; color: var(--ink); border: 1px solid var(--line); background: var(--surface); padding: .35rem .7rem; border-radius: 999px; }
+.toc a:hover { border-color: var(--leaf); color: var(--leaf); }
+
+/* ---------- Data card ---------- */
+.datacard { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1.2rem; }
+.datacard summary { cursor: pointer; font-weight: 600; }
+.datacard .tablewrap { overflow-x: auto; margin-top: .8rem; }
+table { border-collapse: collapse; width: 100%; font-size: var(--s-sm); }
+th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: var(--s-xs); text-transform: uppercase; letter-spacing: .05em; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--f-mono); }
+
+/* ---------- Callouts ---------- */
+.note { border-left: 3px solid var(--leaf); padding: .2rem 0 .2rem 1rem; color: var(--ink); }
+.note strong { color: var(--leaf); }
+.aside { background: var(--sunk); border-radius: var(--radius); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .6rem; font-size: var(--s-sm); }
+.aside h4 { font-size: var(--s-md); }
+
+/* ---------- Ideas list ---------- */
+.ideas { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
+.idea { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .4rem; }
+.idea h4 { font-size: 1rem; }
+.idea p { font-size: var(--s-sm); color: var(--muted); }
+.idea .tag { font-family: var(--f-mono); font-size: .72rem; color: var(--leaf); letter-spacing: .05em; text-transform: uppercase; }
+
+.compare { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
+.compare table { min-width: 640px; }
+.compare th:first-child, .compare td:first-child { width: 22%; color: var(--muted); font-weight: 500; }
+.compare td.x { background: var(--leaf-soft); }
+.compare thead th { color: var(--ink); font-family: var(--f-display); font-size: .95rem; text-transform: none; letter-spacing: 0; }
+
+/* ---------- Formula steps ---------- */
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr)); gap: .9rem; counter-reset: step; }
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; display: flex; flex-direction: column; gap: .55rem; }
+.step .k { font-family: var(--f-mono); font-size: .72rem; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+.step p { font-size: var(--s-sm); color: var(--muted); }
+.eq { font-family: var(--f-mono); font-size: .98rem; display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; color: var(--ink); min-height: 2.8rem; }
+.frac { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1.25; }
+.frac > span:first-child { border-bottom: 1.5px solid currentColor; padding: 0 .3rem .1rem; }
+.frac > span:last-child { padding: .1rem .3rem 0; }
+.sym-l { color: var(--left); font-weight: 500; }
+.sym-r { color: var(--right); font-weight: 500; }
+.sym-res { color: var(--resid); font-weight: 500; }
+.sym-leaf { color: var(--leaf); font-weight: 500; }
+
+/* ---------- Lab benches ---------- */
+.lab { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+.lab-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .5rem 1rem; }
+.lab-head .eyebrow { color: var(--leaf); }
+.lab-grid { display: grid; grid-template-columns: minmax(0, 1fr) 20rem; gap: 1.25rem; align-items: start; }
+@media (max-width: 900px) { .lab-grid { grid-template-columns: minmax(0, 1fr); } }
+.figure { min-width: 0; display: flex; flex-direction: column; gap: .6rem; }
+.chart { width: 100%; height: auto; display: block; touch-action: pan-y; }
+.chart text { font-family: var(--f-mono); font-size: 11px; fill: var(--muted); }
+.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+.chart .axis { stroke: var(--line); stroke-width: 1; }
+.chart .zero { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; font-size: var(--s-xs); color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: .35rem; }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.sw.line { height: 3px; border-radius: 2px; }
+.sw.dot { border-radius: 50%; }
+
+.panel { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.ctrl { display: flex; flex-direction: column; gap: .3rem; }
+.ctrl label, .ctrl .lbl { font-size: var(--s-sm); font-weight: 500; display: flex; justify-content: space-between; gap: .5rem; }
+.ctrl output { font-family: var(--f-mono); font-variant-numeric: tabular-nums; color: var(--leaf); }
+.ctrl small { color: var(--muted); font-size: var(--s-xs); line-height: 1.45; }
+input[type=range] { width: 100%; accent-color: var(--leaf); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex-wrap: wrap; }
+.seg button { background: transparent; border: 0; padding: .4rem .7rem; font: inherit; font-size: var(--s-sm); color: var(--ink); cursor: pointer; border-right: 1px solid var(--line); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.btns { display: flex; flex-wrap: wrap; gap: .5rem; }
+.btn { font: inherit; font-size: var(--s-sm); font-weight: 600; padding: .5rem .9rem; border-radius: 8px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.btn:hover { border-color: var(--ink); }
+.btn.primary { background: var(--leaf); border-color: var(--leaf); color: var(--surface); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .45; cursor: default; }
+
+.readout { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .5rem; }
+.ro { border-radius: 8px; padding: .55rem .6rem; background: var(--sunk); display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
+.ro .h { font-size: .72rem; font-family: var(--f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.ro .v { font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: .92rem; overflow-wrap: anywhere; }
+.ro.l { background: var(--left-soft); } .ro.l .h { color: var(--left); }
+.ro.r { background: var(--right-soft); } .ro.r .h { color: var(--right); }
+.verdict { border-radius: 8px; padding: .7rem .8rem; font-size: var(--s-sm); border: 1px solid var(--line); display: flex; flex-direction: column; gap: .2rem; }
+.verdict .big { font-family: var(--f-mono); font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.verdict.kept { border-color: var(--good); }
+.verdict.kept .state { color: var(--good); font-weight: 600; }
+.verdict.pruned { border-color: var(--warn); }
+.verdict.pruned .state { color: var(--warn); font-weight: 600; }
+
+/* Guide card (task checklist) */
+.guide { background: var(--sunk); border-radius: 10px; padding: .9rem 1rem; display: flex; flex-direction: column; gap: .6rem; }
+.guide h4 { font-size: .95rem; display: flex; justify-content: space-between; gap: .5rem; }
+.guide h4 span { font-family: var(--f-mono); font-size: .75rem; color: var(--muted); font-weight: 400; }
+.guide ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; }
+.guide li { display: grid; grid-template-columns: 1.3rem 1fr; gap: .5rem; font-size: var(--s-sm); line-height: 1.45; }
+.guide li .box { width: 1.1rem; height: 1.1rem; border: 1.5px solid var(--muted); border-radius: 4px; margin-top: .15rem; display: grid; place-items: center; font-size: .75rem; color: var(--surface); }
+.guide li.done .box { background: var(--good); border-color: var(--good); }
+.guide li.done .txt { color: var(--muted); }
+.guide li .why { display: none; color: var(--ink); font-size: .82rem; margin-top: .25rem; padding: .4rem .55rem; background: var(--surface); border-radius: 6px; }
+.guide li.done .why { display: block; }
+.guide li.current .txt { font-weight: 500; }
+
+/* Breakdown */
+.breakdown { font-family: var(--f-mono); font-size: .82rem; background: var(--sunk); border-radius: 8px; padding: .7rem .8rem; display: flex; flex-direction: column; gap: .25rem; font-variant-numeric: tabular-nums; }
+.breakdown .row { display: flex; justify-content: space-between; gap: .75rem; }
+.breakdown .row.total { border-top: 1px solid var(--line); padding-top: .35rem; margin-top: .2rem; font-weight: 500; }
+.breakdown .hd { font-family: var(--f-body); font-size: var(--s-sm); margin-bottom: .2rem; }
+.pos { color: var(--leaf); } .neg { color: var(--resid); }
+
+/* Tree viewer */
+.treebar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem; }
+.treewrap { overflow-x: auto; padding-bottom: .4rem; }
+.tree { display: flex; flex-direction: column; align-items: center; min-width: max-content; padding: .5rem; }
+.tnode { display: flex; flex-direction: column; align-items: center; }
+.tchildren { display: flex; gap: .9rem; position: relative; padding-top: 1.1rem; }
+.tchildren::before { content: ""; position: absolute; top: .45rem; left: 25%; right: 25%; height: .65rem; border: 1.5px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; }
+.tchildren > .tnode { position: relative; }
+.tlabel { font-family: var(--f-mono); font-size: .66rem; color: var(--muted); margin-bottom: .2rem; }
+.tbox { border-radius: 8px; padding: .45rem .65rem; font-size: .8rem; text-align: center; line-height: 1.35; border: 1px solid var(--line); background: var(--surface); }
+.tbox.split { background: var(--sunk); }
+.tbox .q { font-weight: 600; font-family: var(--f-body); }
+.tbox .m { font-family: var(--f-mono); font-size: .7rem; color: var(--muted); }
+.tbox.leafbox { border-color: var(--leaf); }
+.tbox.leafbox .val { font-family: var(--f-mono); font-weight: 500; }
+
+/* Importance */
+.imp { display: flex; flex-direction: column; gap: .9rem; }
+.imp-row { display: grid; grid-template-columns: 8.5rem minmax(0,1fr) 6rem; gap: .75rem; align-items: center; }
+@media (max-width: 520px) { .imp-row { grid-template-columns: 6.5rem minmax(0,1fr) 4.6rem; } }
+.imp-name { font-weight: 500; font-size: var(--s-sm); }
+.imp-track { height: 1.6rem; background: var(--sunk); border-radius: 6px; overflow: hidden; }
+.imp-bar { height: 100%; background: var(--leaf); border-radius: 6px; transition: width .35s ease; }
+.imp-bar.decoy { background: var(--resid); }
+.imp-val { font-family: var(--f-mono); font-size: var(--s-sm); text-align: right; font-variant-numeric: tabular-nums; }
+.imp-explain { font-size: var(--s-sm); background: var(--sunk); border-radius: 8px; padding: .8rem 1rem; }
+.empty { color: var(--muted); font-size: var(--s-sm); padding: 1rem; border: 1px dashed var(--line); border-radius: 8px; text-align: center; }
+
+/* Golf widget */
+.putt-track { overflow-x: auto; }
+.putt-track svg { min-width: 520px; }
+
+pre.code { background: var(--sunk); border-radius: var(--radius); padding: 1rem 1.1rem; overflow-x: auto; font-family: var(--f-mono); font-size: .85rem; line-height: 1.55; margin: 0; }
+pre.code .c { color: var(--muted); }
+.cheat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow-x: auto; }
+.cheat table { min-width: 560px; }
+
+footer { padding-block: 3rem 4rem; color: var(--muted); font-size: var(--s-sm); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+
+<header class="hero">
+  <div class="wide hero-inner">
+    <span class="eyebrow">A hands-on introduction · 4 parts · 3 labs</span>
+    <h1>XGBoost, one tree at a time</h1>
+    <p class="lede">XGBoost makes a prediction by adding up many small decision trees. Each new tree is trained to fix the mistakes the earlier trees left behind. This guide builds that idea from scratch: first the intuition, then the five formulas that drive it, then a full model you grow tree by tree, and finally a look at which features the model relies on.</p>
+    <div class="hero-eq" aria-label="Prediction equals the average plus learning rate times tree 1 plus learning rate times tree 2 and so on">
+      <svg id="heroEq" viewBox="0 0 720 120" role="img"></svg>
+    </div>
+    <nav class="toc" aria-label="Sections">
+      <a href="#intuition">1 · Intuition</a>
+      <a href="#math">2 · The math</a>
+      <a href="#ensemble">3 · Grow a model</a>
+      <a href="#importance">4 · Feature importance</a>
+      <a href="#cheatsheet">Cheat sheet</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="col stack">
+    <div class="datacard">
+      <details>
+        <summary>The dataset used in every lab: 16 days at an ice-cream stand</summary>
+        <div class="stack" style="margin-top:.8rem; gap:.6rem">
+          <p style="font-size:var(--s-sm)">We want to predict <strong>cones sold</strong> from three features. Hotter days and weekends sell more. <strong>Day of month</strong> is a decoy: it has no effect on sales at all. Keep an eye on whether the model figures that out.</p>
+          <div class="tablewrap"><table id="dataTable"></table></div>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <!-- ===================== PART 1 ===================== -->
+  <section class="part" id="intuition">
+    <div class="col stack">
+      <div class="part-head">
+        <span class="part-num">Part 1</span>
+        <h2>The intuition: a relay of small corrections</h2>
+      </div>
+      <p>A single decision tree asks a series of yes/no questions (“Is it hotter than 75°F?”, “Is it a weekend?”) and lands on an answer. If you let one tree grow very deep, it can fit the training data perfectly. It also memorizes the noise and predicts poorly on new days.</p>
+      <p><strong>Boosting</strong> takes the opposite approach. It starts with a crude guess, usually the average. Then it repeats one loop:</p>
+      <ol style="margin:0; padding-left:1.3rem; display:flex; flex-direction:column; gap:.35rem">
+        <li>Measure how wrong the current prediction is for every row. These errors are called <span class="sym-res">residuals</span>.</li>
+        <li>Train a <em>small</em> tree to predict those residuals.</li>
+        <li>Add a fraction of that tree’s answer to the running prediction. The fraction is the <strong>learning rate, η</strong> (eta).</li>
+      </ol>
+      <p>Each tree on its own is weak. It might only know “hot days sell more.” But each one is aimed squarely at what is still wrong, so the sum keeps improving.</p>
+    </div>
+
+    <div class="wide">
+      <div class="lab" id="puttLab">
+        <div class="lab-head">
+          <div class="stack" style="gap:.2rem">
+            <span class="eyebrow">Warm-up · The putting analogy</span>
+            <h3>Each tree is a putt toward the hole</h3>
+          </div>
+        </div>
+        <div class="lab-grid">
+          <div class="figure">
+            <div class="putt-track"><svg id="puttSvg" class="chart" viewBox="0 0 640 170" role="img" aria-label="Number line showing the prediction moving toward the actual value"></svg></div>
+            <div class="legend">
+              <span><i class="sw dot" style="background:var(--ink)"></i>Current prediction (the ball)</span>
+              <span><i class="sw" style="background:var(--resid)"></i>Actual sales (the hole)</span>
+              <span><i class="sw line" style="background:var(--leaf)"></i>Each tree’s step</span>
+            </div>
+            <div id="puttLog" class="breakdown" aria-live="polite"></div>
+          </div>
+          <div class="panel">
+            <p style="font-size:var(--s-sm)">Take one row: a hot Saturday that sold <strong>148</strong> cones. The model starts at the average, <strong>96.2</strong>. Each stroke is a tree that estimates the remaining gap. Its estimate is a bit off every time, like a real tree.</p>
+            <div class="ctrl">
+              <label for="puttEta">Learning rate η <output id="puttEtaOut">0.30</output></label>
+              <input id="puttEta" type="range" min="0.1" max="1" step="0.05" value="0.3">
+              <small>How much of each tree’s estimate you trust.</small>
+            </div>
+            <div class="btns">
+              <button class="btn primary" id="puttGo">Take a stroke</button>
+              <button class="btn" id="puttReset">Reset</button>
+            </div>
+            <div class="guide" id="puttGuide">
+              <h4>Try this <span></span></h4>
+              <ol></ol>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col stack" style="margin-top:1rem">
+      <h3>What makes XGBoost different from other boosting methods</h3>
+      <p>Boosting is older than XGBoost. AdaBoost (1995) and classic gradient boosting (2001) already chained weak learners together. XGBoost (2014–2016) kept the same relay but changed how each tree is built and how the whole thing runs.</p>
+    </div>
+    <div class="wide stack">
+      <div class="compare">
+        <table>
+          <thead><tr><th></th><th>AdaBoost</th><th>Gradient boosting</th><th>XGBoost</th></tr></thead>
+          <tbody>
+            <tr><td>What the next learner targets</td><td>Rows reweighted so mistakes count more</td><td>The gradient of the loss (residuals, for squared error)</td><td class="x">Gradient <em>and</em> curvature (second derivative) of the loss</td></tr>
+            <tr><td>Losses supported</td><td>Exponential loss (classification)</td><td>Any differentiable loss</td><td class="x">Any loss with a first and second derivative</td></tr>
+            <tr><td>Regularization</td><td>Learning rate, number of rounds</td><td>Learning rate, depth, subsampling</td><td class="x">All of those, plus penalties written into the objective: λ on leaf values, γ per leaf</td></tr>
+            <tr><td>How a split is chosen</td><td>The weak learner’s own impurity (e.g. Gini)</td><td>Squared-error reduction on the residuals</td><td class="x">Gain derived from the regularized objective, so pruning is built in</td></tr>
+            <tr><td>Missing values</td><td>Must be filled in first</td><td>Usually filled in first</td><td class="x">Learns a default direction at each split</td></tr>
+            <tr><td>Engineering</td><td>Simple, sequential</td><td>Sequential, exact split search</td><td class="x">Parallel split search, histogram binning, cache-aware memory layout</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="ideas">
+        <div class="idea"><span class="tag">Second-order</span><h4>It uses curvature, not just slope</h4><p>Classic gradient boosting knows which direction reduces the error. XGBoost also uses how sharply the loss curves, which tells it how big a step to take. That is a Newton step instead of a plain gradient step.</p></div>
+        <div class="idea"><span class="tag">Regularized objective</span><h4>Complexity has a price</h4><p>Every tree is scored on accuracy <em>minus</em> a penalty. λ shrinks leaf values toward zero. γ charges a fixed cost for every extra leaf, so weak splits get pruned.</p></div>
+        <div class="idea"><span class="tag">One formula</span><h4>Splits are scored by the same objective</h4><p>The “similarity” and “gain” you will compute in Part 2 fall straight out of that penalized objective. Tree building and regularization agree by construction.</p></div>
+        <div class="idea"><span class="tag">Sparsity-aware</span><h4>Missing values have a learned path</h4><p>At each split, XGBoost tries sending missing values left and right and keeps whichever gives more gain.</p></div>
+        <div class="idea"><span class="tag">Systems</span><h4>Built to be fast</h4><p>Features are pre-sorted or binned into histograms, and the best split for each feature is searched in parallel. That is a large part of why it won so many competitions.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== PART 2 ===================== -->
+  <section class="part" id="math">
+    <div class="col stack">
+      <div class="part-head">
+        <span class="part-num">Part 2</span>
+        <h2>The math, one split at a time</h2>
+      </div>
+      <p>For regression with squared error, the whole algorithm reduces to five lines. You only need addition, squaring and division. Read them once, then use the lab to watch each number move.</p>
+    </div>
+    <div class="wide stack">
+      <div class="steps">
+        <div class="step"><span class="k">Step 1 · Start</span><div class="eq">ŷ₀ = average(y) = 96.2</div><p>Every row starts with the same guess. Modern XGBoost estimates this starting point from the data.</p></div>
+        <div class="step"><span class="k">Step 2 · Residuals</span><div class="eq"><span class="sym-res">r</span> = y − ŷ</div><p>How far off each row is. Positive means we guessed too low.</p></div>
+        <div class="step"><span class="k">Step 3 · Similarity</span><div class="eq">Sim = <span class="frac"><span>(Σ <span class="sym-res">r</span>)²</span><span>n + λ</span></span></div><p>High when a group’s residuals agree in sign. Residuals that cancel out score near zero.</p></div>
+        <div class="step"><span class="k">Step 4 · Gain</span><div class="eq">Gain = <span class="sym-l">Sim<sub>L</sub></span> + <span class="sym-r">Sim<sub>R</sub></span> − Sim<sub>root</sub></div><p>How much a split improves agreement. Keep it only if <strong>Gain &gt; γ</strong>; otherwise prune it.</p></div>
+        <div class="step"><span class="k">Step 5 · Leaf + update</span><div class="eq"><span class="sym-leaf">w</span> = <span class="frac"><span>Σ <span class="sym-res">r</span></span><span>n + λ</span></span>&nbsp; ŷ ← ŷ + η·<span class="sym-leaf">w</span></div><p>Each leaf outputs a shrunken average residual. The prediction moves by η times that.</p></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="aside">
+        <h4>Where the “second-order” part hides</h4>
+        <p>The general formulas use each row’s gradient <em>g</em> (slope of the loss) and hessian <em>h</em> (its curvature): Sim = G²/(H + λ) and w = −G/(H + λ), where G and H are the sums over the rows in a leaf.</p>
+        <p>For squared error, g = ŷ − y = −r and h = 1 for every row. So G is minus the sum of residuals and H is just the count n. That is why the simple versions above use n. For classification with log loss, h = p(1 − p), so rows the model is already confident about count for less.</p>
+        <p>The XGBoost paper also puts a factor of ½ in front of the gain. It doesn’t change which split wins, so we leave it out here.</p>
+      </div>
+    </div>
+
+    <div class="wide">
+      <div class="lab" id="splitLab">
+        <div class="lab-head">
+          <div class="stack" style="gap:.2rem">
+            <span class="eyebrow">Lab A · Split explorer</span>
+            <h3>Find the first split of the first tree</h3>
+          </div>
+          <div class="seg" role="group" aria-label="Feature to split on" id="featSeg">
+            <button type="button" data-f="t" aria-pressed="true">Temperature</button>
+            <button type="button" data-f="w" aria-pressed="false">Weekend</button>
+            <button type="button" data-f="d" aria-pressed="false">Day of month</button>
+          </div>
+        </div>
+        <div class="lab-grid">
+          <div class="figure">
+            <svg id="splitSvg" class="chart" viewBox="0 0 640 330" role="img" aria-label="Residuals by feature with a draggable split line"></svg>
+            <div class="legend">
+              <span><i class="sw line" style="background:var(--resid)"></i>Residual (actual − 96.2)</span>
+              <span><i class="sw line" style="background:var(--left)"></i>Left leaf output w</span>
+              <span><i class="sw line" style="background:var(--right)"></i>Right leaf output w</span>
+              <span><i class="sw line" style="background:var(--muted)"></i>Dashed: plain average (λ = 0)</span>
+            </div>
+            <div class="ctrl">
+              <label for="thrRange">Split threshold <output id="thrOut"></output></label>
+              <input id="thrRange" type="range" min="0" max="10" step="1" value="0">
+              <small>Drag the vertical line on the chart, or use this slider. XGBoost tries every one of these positions.</small>
+            </div>
+            <div>
+              <div class="eyebrow" style="margin-bottom:.3rem">Gain at every possible threshold for this feature</div>
+              <svg id="scanSvg" class="chart" viewBox="0 0 640 120" role="img" aria-label="Bar chart of gain for each candidate threshold"></svg>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="readout">
+              <div class="ro"><span class="h">Root</span><span class="v" id="roRoot"></span></div>
+              <div class="ro l"><span class="h">Left</span><span class="v" id="roL"></span></div>
+              <div class="ro r"><span class="h">Right</span><span class="v" id="roR"></span></div>
+            </div>
+            <div class="verdict" id="verdict" aria-live="polite"></div>
+            <div class="ctrl">
+              <label for="lamA">λ (lambda) <output id="lamAOut">0</output></label>
+              <input id="lamA" type="range" min="0" max="20" step="1" value="0">
+              <small>Added to every denominator. It shrinks leaf outputs and hits small leaves hardest.</small>
+            </div>
+            <div class="ctrl">
+              <label for="gamA">γ (gamma) <output id="gamAOut">0</output></label>
+              <input id="gamA" type="range" min="0" max="12000" step="100" value="0">
+              <small>The minimum gain a split must beat to survive.</small>
+            </div>
+            <button class="btn" id="bestBtn">Jump to the best split</button>
+            <div class="guide" id="splitGuide">
+              <h4>Your guide <span></span></h4>
+              <ol></ol>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col stack">
+      <p class="note"><strong>What just happened:</strong> because we started at the average, the 16 residuals sum to zero and the root’s similarity is 0. A good split separates the negative residuals from the positive ones, so each side becomes internally “similar” and the gain jumps. XGBoost repeats this search for every feature and every threshold, keeps the winner, and then searches again inside each branch until it hits the depth limit.</p>
+    </div>
+  </section>
+
+  <!-- ===================== PART 3 ===================== -->
+  <section class="part" id="ensemble">
+    <div class="col stack">
+      <div class="part-head">
+        <span class="part-num">Part 3</span>
+        <h2>Grow a model, tree by tree</h2>
+      </div>
+      <p>Now let the algorithm run the loop for you. Each press of <strong>Add tree</strong> computes fresh residuals, builds a tree with the split search from Lab A (going down to the depth you choose), prunes splits whose gain is below γ, and adds η × the tree’s output to every prediction.</p>
+      <p>The lab opens with 5 trees already built so you can see a model in progress.</p>
+    </div>
+    <div class="wide">
+      <div class="lab" id="boostLab">
+        <div class="lab-head">
+          <div class="stack" style="gap:.2rem">
+            <span class="eyebrow">Lab B · Boosting rounds</span>
+            <h3 id="boostTitle">5 trees · training error 0</h3>
+          </div>
+          <div class="btns">
+            <button class="btn primary" id="add1">Add tree</button>
+            <button class="btn" id="add10">Add 10</button>
+            <button class="btn" id="resetB">Reset to 0 trees</button>
+          </div>
+        </div>
+        <div class="lab-grid">
+          <div class="figure">
+            <svg id="fitSvg" class="chart" viewBox="0 0 640 330" role="img" aria-label="Actual cones sold and model predictions by temperature"></svg>
+            <div class="legend">
+              <span><i class="sw dot" style="background:var(--ink)"></i>Weekend (actual)</span>
+              <span><i class="sw dot" style="border:2px solid var(--ink)"></i>Weekday (actual)</span>
+              <span><i class="sw line" style="background:var(--leaf)"></i>Model prediction</span>
+              <span><i class="sw line" style="background:var(--resid)"></i>Remaining residual</span>
+            </div>
+            <div>
+              <div class="eyebrow" style="margin-bottom:.3rem">Training error (RMSE, cones) after each tree</div>
+              <svg id="lossSvg" class="chart" viewBox="0 0 640 150" role="img" aria-label="Training error by number of trees"></svg>
+              <div class="legend"><span><i class="sw line" style="background:var(--leaf)"></i>Current settings</span><span><i class="sw line" style="background:var(--muted)"></i>Dashed: your previous settings</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="ctrl">
+              <label for="etaB">η learning rate <output id="etaBOut">0.30</output></label>
+              <input id="etaB" type="range" min="0.05" max="1" step="0.05" value="0.3">
+            </div>
+            <div class="ctrl">
+              <label for="lamB">λ lambda <output id="lamBOut">1</output></label>
+              <input id="lamB" type="range" min="0" max="20" step="1" value="1">
+            </div>
+            <div class="ctrl">
+              <label for="gamB">γ gamma <output id="gamBOut">0</output></label>
+              <input id="gamB" type="range" min="0" max="3000" step="50" value="0">
+            </div>
+            <div class="ctrl">
+              <span class="lbl">Max depth</span>
+              <div class="seg" role="group" aria-label="Maximum tree depth" id="depthSeg">
+                <button type="button" data-d="1" aria-pressed="false">1</button>
+                <button type="button" data-d="2" aria-pressed="true">2</button>
+                <button type="button" data-d="3" aria-pressed="false">3</button>
+              </div>
+              <small>Changing a setting rebuilds the same number of trees with the new values. XGBoost’s default depth is 6; we keep it small so you can read the trees.</small>
+            </div>
+            <div id="breakdown" class="breakdown" aria-live="polite"></div>
+            <div class="guide" id="boostGuide">
+              <h4>Your guide <span></span></h4>
+              <ol></ol>
+            </div>
+          </div>
+        </div>
+        <div class="stack" style="gap:.5rem">
+          <div class="treebar">
+            <h4 id="treeTitle">Tree</h4>
+            <div class="btns">
+              <button class="btn" id="treePrev" aria-label="Previous tree">◀ Prev</button>
+              <button class="btn" id="treeNext" aria-label="Next tree">Next ▶</button>
+            </div>
+          </div>
+          <div class="treewrap"><div id="treeView"></div></div>
+          <small style="color:var(--muted); font-size:var(--s-xs)">Each split shows its gain and how many rows reached it (its cover). Each leaf shows its output w; the model adds η × w for rows that land there.</small>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== PART 4 ===================== -->
+  <section class="part" id="importance">
+    <div class="col stack">
+      <div class="part-head">
+        <span class="part-num">Part 4</span>
+        <h2>Feature importance: who did the work?</h2>
+      </div>
+      <p>Once the model is built, a natural question is which features it relied on. XGBoost answers by walking every split in every tree and adding up credit for the feature that split used. There are three standard ways to count that credit, and they can disagree.</p>
+      <p>The chart below is computed live from the model you built in Lab B. Change the model there, and these bars change too.</p>
+    </div>
+    <div class="wide">
+      <div class="lab" id="impLab">
+        <div class="lab-head">
+          <div class="stack" style="gap:.2rem">
+            <span class="eyebrow">Lab C · Feature importance</span>
+            <h3 id="impTitle">From your 5-tree model</h3>
+          </div>
+          <div class="btns" style="align-items:center">
+            <div class="seg" role="group" aria-label="Importance type" id="impSeg">
+              <button type="button" data-m="gain" aria-pressed="true">Gain</button>
+              <button type="button" data-m="weight" aria-pressed="false">Weight</button>
+              <button type="button" data-m="cover" aria-pressed="false">Cover</button>
+            </div>
+            <div class="seg" role="group" aria-label="Total or per split" id="aggSeg">
+              <button type="button" data-a="total" aria-pressed="true">Total</button>
+              <button type="button" data-a="avg" aria-pressed="false">Per split</button>
+            </div>
+          </div>
+        </div>
+        <div class="lab-grid">
+          <div class="figure">
+            <div class="imp" id="impBars"></div>
+            <div class="imp-explain" id="impExplain"></div>
+            <div class="tablewrap" style="overflow-x:auto">
+              <table id="splitTable"></table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="guide" id="impGuide">
+              <h4>Your guide <span></span></h4>
+              <ol></ol>
+            </div>
+            <div class="btns">
+              <a class="btn" href="#ensemble" style="text-decoration:none">Back to Lab B</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col stack">
+      <h3>Reading importance responsibly</h3>
+      <p><strong>Gain</strong> is usually the most meaningful: it measures how much each feature actually improved the objective. <strong>Weight</strong> only counts how often a feature was chosen, so a noisy feature that gets picked for many tiny late-stage splits can look busy without being useful. <strong>Cover</strong> tells you how many rows those splits touched. A feature used at the root covers everyone; one used deep in a tree covers a few rows.</p>
+      <p>Two more cautions. Importance describes what <em>this model</em> used, not what causes sales in the real world. And when two features carry the same information, the model may lean on one and ignore the other, so the second looks unimportant even though it isn’t. For sturdier answers, practitioners also use <strong>permutation importance</strong> (shuffle a feature and measure how much accuracy drops on held-out data) and <strong>SHAP values</strong> (split each individual prediction into per-feature contributions, much like the breakdown you saw in Lab B).</p>
+      <p class="note"><strong>Library note:</strong> in the Python scikit-learn wrapper, <code>model.feature_importances_</code> reports <em>average</em> gain per split by default. Use <code>booster.get_score(importance_type="total_gain")</code> for the total.</p>
+    </div>
+  </section>
+
+  <!-- ===================== CHEAT SHEET ===================== -->
+  <section class="part" id="cheatsheet">
+    <div class="col stack">
+      <div class="part-head">
+        <span class="part-num">Cheat sheet</span>
+        <h2>From the labs to real code</h2>
+      </div>
+      <p>Every dial you touched maps to a real XGBoost parameter. A few more control randomness, which helps a model generalize.</p>
+    </div>
+    <div class="wide stack">
+      <div class="cheat">
+        <table>
+          <thead><tr><th>Parameter</th><th>Symbol in this guide</th><th>What it does</th><th>Raise it when…</th></tr></thead>
+          <tbody>
+            <tr><td><code>learning_rate</code> (eta)</td><td>η</td><td>Scales each tree’s contribution</td><td>Lower it (with more trees) for a smoother, more accurate model</td></tr>
+            <tr><td><code>n_estimators</code></td><td>number of trees</td><td>How many boosting rounds</td><td>Error on validation data is still falling; use early stopping to choose</td></tr>
+            <tr><td><code>max_depth</code></td><td>max depth</td><td>How many questions each tree may ask</td><td>Features interact (e.g. hot <em>and</em> weekend); lower it if overfitting</td></tr>
+            <tr><td><code>reg_lambda</code></td><td>λ</td><td>Shrinks leaf outputs, especially small leaves</td><td>The model overfits small groups of rows</td></tr>
+            <tr><td><code>gamma</code></td><td>γ</td><td>Minimum gain needed to keep a split</td><td>Trees contain many tiny, low-gain splits</td></tr>
+            <tr><td><code>min_child_weight</code></td><td>min H in a leaf</td><td>Minimum hessian sum (row count, for squared error) per leaf</td><td>Leaves are built from just one or two rows</td></tr>
+            <tr><td><code>subsample</code>, <code>colsample_bytree</code></td><td>—</td><td>Each tree sees a random share of rows or columns</td><td>You want more variety between trees and less overfitting</td></tr>
+          </tbody>
+        </table>
+      </div>
+<pre class="code"><span class="c"># pip install xgboost</span>
+from xgboost import XGBRegressor
+
+model = XGBRegressor(
+    n_estimators=300,
+    learning_rate=0.1,    <span class="c"># η</span>
+    max_depth=4,
+    reg_lambda=1.0,       <span class="c"># λ</span>
+    gamma=0.0,            <span class="c"># γ</span>
+    subsample=0.8,
+    colsample_bytree=0.8,
+    early_stopping_rounds=30,
+)
+model.fit(X_train, y_train, eval_set=[(X_valid, y_valid)], verbose=False)
+
+model.feature_importances_                                   <span class="c"># average gain per split</span>
+model.get_booster().get_score(importance_type="total_gain")  <span class="c"># total gain</span>
+model.get_booster().get_score(importance_type="weight")      <span class="c"># split counts</span></pre>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="col">All three labs run the squared-error version of XGBoost’s exact split search in your browser on the 16-row dataset above. Numbers will differ slightly from the library, which adds a ½ to the gain and uses its own base-score estimate.</div>
+</footer>
+
+<script>
+(() => {
+"use strict";
+
+/* ================= Data ================= */
+const DATA = [
+  {t:58,w:0,d:3,y:41},{t:61,w:1,d:17,y:79},{t:63,w:0,d:9,y:51},{t:66,w:0,d:26,y:57},
+  {t:68,w:1,d:12,y:102},{t:70,w:0,d:30,y:64},{t:72,w:1,d:5,y:105},{t:74,w:0,d:21,y:81},
+  {t:76,w:0,d:14,y:79},{t:78,w:1,d:8,y:125},{t:80,w:0,d:27,y:94},{t:83,w:1,d:2,y:129},
+  {t:85,w:0,d:19,y:105},{t:88,w:1,d:11,y:148},{t:91,w:0,d:24,y:114},{t:94,w:1,d:6,y:165}
+];
+const N = DATA.length;
+const FEATS = { t: {name:"Temperature", short:"Temp"}, w: {name:"Weekend", short:"Weekend"}, d: {name:"Day of month", short:"Day"} };
+const FKEYS = ["t","w","d"];
+const BASE = DATA.reduce((s,r)=>s+r.y,0)/N;
+
+const fmt = (v, dp=1) => (Math.abs(v) < 0.05 && dp===1 ? 0 : v).toLocaleString("en-US",{minimumFractionDigits:dp, maximumFractionDigits:dp});
+const fmtInt = v => Math.round(v).toLocaleString("en-US");
+const sgn = (v, dp=1) => (v >= 0 ? "+" : "−") + fmt(Math.abs(v), dp);
+const thrText = (f, thr) => f === "w" ? "Weekend = no / yes" : `${FEATS[f].name} < ${fmt(thr,1)}${f==="t"?"°F":""}`;
+
+/* ================= Core XGBoost math (squared error) ================= */
+const sim = (G, n, lam) => (G*G) / (n + lam);
+function candidates(idx, f) {
+  const vals = [...new Set(idx.map(i => DATA[i][f]))].sort((a,b)=>a-b);
+  const out = [];
+  for (let k = 1; k < vals.length; k++) out.push((vals[k-1] + vals[k]) / 2);
+  return out;
+}
+function evalSplit(idx, r, f, thr, lam) {
+  let GL=0,nL=0,GR=0,nR=0;
+  for (const i of idx) { if (DATA[i][f] < thr) { GL+=r[i]; nL++; } else { GR+=r[i]; nR++; } }
+  const G = GL+GR, n = nL+nR;
+  const simRoot = sim(G,n,lam), simL = sim(GL,nL,lam), simR = sim(GR,nR,lam);
+  return { f, thr, GL, nL, GR, nR, G, n, simRoot, simL, simR, gain: simL + simR - simRoot };
+}
+function bestSplit(idx, r, lam, feats = FKEYS) {
+  let best = null;
+  for (const f of feats) for (const thr of candidates(idx, f)) {
+    const s = evalSplit(idx, r, f, thr, lam);
+    if (!best || s.gain > best.gain + 1e-9) best = s;
+  }
+  return best;
+}
+function buildTree(idx, r, depth, P) {
+  const G = idx.reduce((s,i)=>s+r[i],0), n = idx.length;
+  const node = { n, G, value: G/(n+P.lam), depth };
+  if (depth < P.depth && n >= 2) {
+    const s = bestSplit(idx, r, P.lam);
+    if (s && s.gain > 1e-6) {
+      node.split = s;
+      node.left = buildTree(idx.filter(i => DATA[i][s.f] < s.thr), r, depth+1, P);
+      node.right = buildTree(idx.filter(i => DATA[i][s.f] >= s.thr), r, depth+1, P);
+    }
+  }
+  return node;
+}
+// XGBoost prunes bottom-up: a split is removed if its gain is below γ and its children are leaves.
+function prune(node, gamma) {
+  if (!node.split) return;
+  prune(node.left, gamma); prune(node.right, gamma);
+  if (!node.left.split && !node.right.split && node.split.gain < gamma) {
+    delete node.split; delete node.left; delete node.right;
+  }
+}
+function predictTree(node, row) {
+  while (node.split) node = row[node.split.f] < node.split.thr ? node.left : node.right;
+  return node.value;
+}
+function eachSplit(node, fn) { if (!node.split) return; fn(node); eachSplit(node.left, fn); eachSplit(node.right, fn); }
+const rmse = preds => Math.sqrt(DATA.reduce((s,r,i)=>s+(r.y-preds[i])**2,0)/N);
+
+/* ================= SVG helpers ================= */
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs = {}, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function txt(parent, x, y, s, attrs = {}) { const t = el("text", { x, y, ...attrs }, parent); t.textContent = s; return t; }
+const scale = (d0, d1, r0, r1) => v => r0 + (v - d0) / (d1 - d0) * (r1 - r0);
+function svgPoint(svg, evt) {
+  const pt = svg.createSVGPoint(); pt.x = evt.clientX; pt.y = evt.clientY;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+/* ================= Guide (auto-checking task list) ================= */
+function makeGuide(rootId, tasks) {
+  const root = document.getElementById(rootId);
+  const ol = root.querySelector("ol"), counter = root.querySelector("h4 span");
+  const done = tasks.map(() => false);
+  const lis = tasks.map(t => {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="box" aria-hidden="true">✓</span><div><div class="txt">${t.text}</div><div class="why">${t.why}</div></div>`;
+    ol.appendChild(li); return li;
+  });
+  function render() {
+    const first = done.indexOf(false);
+    lis.forEach((li,i) => { li.classList.toggle("done", done[i]); li.classList.toggle("current", i === first); });
+    counter.textContent = `${done.filter(Boolean).length} / ${tasks.length}`;
+  }
+  render();
+  return function check(state) {
+    let changed = false;
+    tasks.forEach((t,i) => { if (!done[i] && t.test(state)) { done[i] = true; changed = true; } });
+    if (changed) render();
+  };
+}
+
+/* ================= Hero equation ================= */
+(function hero() {
+  const svg = document.getElementById("heroEq");
+  const mid = 64;
+  txt(svg, 0, mid+6, "ŷ =", { style: "font-family:var(--f-mono);font-size:22px;fill:var(--ink)" });
+  // starting value
+  el("rect", { x: 52, y: mid-26, width: 92, height: 44, rx: 8, fill: "var(--sunk)", stroke: "var(--line)" }, svg);
+  txt(svg, 98, mid+3, "96.2", { "text-anchor": "middle", style: "font-family:var(--f-mono);font-size:18px;fill:var(--ink)" });
+  txt(svg, 98, mid+40, "average", { "text-anchor": "middle", style: "font-family:var(--f-mono);font-size:11px;fill:var(--muted)" });
+  const trees = [ { x: 160, lab: "tree 1" }, { x: 300, lab: "tree 2" }, { x: 440, lab: "tree 3" } ];
+  trees.forEach((tr, k) => {
+    txt(svg, tr.x, mid+6, "+ η·", { style: "font-family:var(--f-mono);font-size:20px;fill:var(--ink)" });
+    const ox = tr.x + 52, oy = mid - 34;
+    // tiny tree glyph: root, two children, leaves
+    const g = el("g", {}, svg);
+    const shade = ["var(--leaf)","var(--left)","var(--right)"][k];
+    el("line", { x1: ox+30, y1: oy+8, x2: ox+12, y2: oy+30, stroke: "var(--line)", "stroke-width": 2 }, g);
+    el("line", { x1: ox+30, y1: oy+8, x2: ox+48, y2: oy+30, stroke: "var(--line)", "stroke-width": 2 }, g);
+    el("circle", { cx: ox+30, cy: oy+8, r: 7, fill: "var(--surface)", stroke: "var(--ink)", "stroke-width": 1.5 }, g);
+    el("rect", { x: ox+2, y: oy+28, width: 20, height: 14, rx: 3, fill: shade }, g);
+    el("rect", { x: ox+38, y: oy+28, width: 20, height: 14, rx: 3, fill: shade, opacity: .55 }, g);
+    txt(svg, ox+30, mid+40, tr.lab, { "text-anchor": "middle", style: "font-family:var(--f-mono);font-size:11px;fill:var(--muted)" });
+  });
+  txt(svg, 580, mid+6, "+ …", { style: "font-family:var(--f-mono);font-size:20px;fill:var(--ink)" });
+  txt(svg, 0, 14, "Every XGBoost prediction is a sum:", { style: "font-family:var(--f-body);font-size:13px;fill:var(--muted)" });
+  txt(svg, 718, 14, "η = learning rate", { "text-anchor": "end", style: "font-family:var(--f-mono);font-size:12px;fill:var(--leaf)" });
+})();
+
+/* ================= Data table ================= */
+(function table() {
+  const t = document.getElementById("dataTable");
+  let h = `<thead><tr><th class="num">Row</th><th class="num">Temp (°F)</th><th>Weekend</th><th class="num">Day of month</th><th class="num">Cones sold</th></tr></thead><tbody>`;
+  DATA.forEach((r,i) => { h += `<tr><td class="num">${i+1}</td><td class="num">${r.t}</td><td>${r.w ? "yes" : "no"}</td><td class="num">${r.d}</td><td class="num">${r.y}</td></tr>`; });
+  h += `</tbody><tfoot><tr><td></td><td></td><td></td><td class="num" style="color:var(--muted)">average</td><td class="num">${fmt(BASE,1)}</td></tr></tfoot>`;
+  t.innerHTML = h;
+})();
+
+/* ================= Putting warm-up ================= */
+(function putt() {
+  const svg = document.getElementById("puttSvg"), log = document.getElementById("puttLog");
+  const etaIn = document.getElementById("puttEta"), etaOut = document.getElementById("puttEtaOut");
+  const START = BASE, HOLE = 148;
+  const ERR = [1.3, 0.72, 1.22, 0.82, 1.15, 0.88, 1.1, 0.93, 1.06, 0.97, 1.03, 0.99];
+  const X = scale(80, 175, 30, 610);
+  let pos = [START], eta = 0.3, runs = { e1: false, e03: false };
+  const guide = makeGuide("puttGuide", [
+    { text: "Leave η at 0.30 and take 5 strokes.", test: s => s.eta <= 0.35 && s.n >= 5,
+      why: "Small, steady steps. Each tree’s estimate is off by up to 30%, but trusting only 30% of it keeps the ball from flying past." },
+    { text: "Reset, set η to 1.0, and take 5 strokes.", test: s => s.eta >= 0.95 && s.n >= 5,
+      why: "With η = 1 you trust every imperfect tree completely, so the ball overshoots and bounces around the hole. In a real model this shows up as overfitting." },
+    { text: "Try η = 0.1. How many strokes until the gap is under 5 cones?", test: s => s.eta <= 0.15 && s.n >= 10,
+      why: "Very small η needs many more trees. In practice people pick a small η (0.05–0.1) and let early stopping choose the number of trees." }
+  ]);
+  function render() {
+    svg.innerHTML = "";
+    const y0 = 120;
+    el("line", { x1: 30, y1: y0, x2: 610, y2: y0, class: "axis" }, svg);
+    for (let v = 80; v <= 175; v += 10) {
+      el("line", { x1: X(v), y1: y0, x2: X(v), y2: y0+5, class: "axis" }, svg);
+      txt(svg, X(v), y0+20, v, { "text-anchor": "middle" });
+    }
+    txt(svg, 610, y0+36, "cones sold", { "text-anchor": "end" });
+    // hole
+    el("line", { x1: X(HOLE), y1: y0, x2: X(HOLE), y2: 22, stroke: "var(--resid)", "stroke-width": 2 }, svg);
+    el("path", { d: `M${X(HOLE)} 22 l22 8 l-22 8 z`, fill: "var(--resid)" }, svg);
+    txt(svg, X(HOLE)+26, 34, "actual 148", { style: "fill:var(--resid)" });
+    el("ellipse", { cx: X(HOLE), cy: y0, rx: 8, ry: 3, fill: "var(--resid)" }, svg);
+    // start marker
+    txt(svg, X(START), y0+36, "start 96.2", { "text-anchor": "middle" });
+    // arcs
+    for (let k = 1; k < pos.length; k++) {
+      const a = X(pos[k-1]), b = X(pos[k]); const h = Math.min(70, 18 + Math.abs(b-a)*0.35);
+      el("path", { d: `M${a} ${y0-6} Q ${(a+b)/2} ${y0-6-h} ${b} ${y0-6}`, fill: "none", stroke: "var(--leaf)", "stroke-width": 1.8, opacity: Math.max(.35, 1 - (pos.length-1-k)*0.12) }, svg);
+    }
+    pos.forEach((p, k) => el("circle", { cx: X(p), cy: y0-6, r: k === pos.length-1 ? 7 : 3, fill: k === pos.length-1 ? "var(--ink)" : "var(--muted)" }, svg));
+    const last = pos[pos.length-1];
+    let h = `<div class="hd">${pos.length-1} stroke${pos.length===2?"":"s"} at η = ${eta.toFixed(2)}</div>`;
+    const rows = pos.slice(1).map((p, k) => {
+      const gap = HOLE - pos[k], est = gap * ERR[k % ERR.length];
+      return `<div class="row"><span>Tree ${k+1}: gap ${sgn(gap)} → tree says ${sgn(est)} → step η×${sgn(est)}</span><span>${fmt(p)}</span></div>`;
+    });
+    h += rows.slice(-5).join("");
+    if (rows.length > 5) h = h.replace(`</div>`, `</div><div class="row"><span style="color:var(--muted)">… ${rows.length-5} earlier strokes</span><span></span></div>`);
+    h += `<div class="row total"><span>Remaining gap (residual)</span><span class="${Math.abs(HOLE-last)<5?'pos':'neg'}">${sgn(HOLE-last)}</span></div>`;
+    log.innerHTML = h;
+    guide({ eta, n: pos.length-1 });
+  }
+  document.getElementById("puttGo").onclick = () => {
+    const k = pos.length-1, cur = pos[k];
+    const est = (HOLE - cur) * ERR[k % ERR.length];
+    pos.push(cur + eta * est); render();
+  };
+  document.getElementById("puttReset").onclick = () => { pos = [START]; render(); };
+  etaIn.oninput = () => { eta = +etaIn.value; etaOut.textContent = eta.toFixed(2); pos = [START]; render(); };
+  render();
+})();
+
+/* ================= Lab A: split explorer ================= */
+(function splitLab() {
+  const svg = document.getElementById("splitSvg"), scan = document.getElementById("scanSvg");
+  const thrIn = document.getElementById("thrRange"), thrOut = document.getElementById("thrOut");
+  const lamIn = document.getElementById("lamA"), gamIn = document.getElementById("gamA");
+  const r0 = DATA.map(r => r.y - BASE);
+  const ALL = DATA.map((_,i)=>i);
+  let f = "t", lam = 0, gam = 0, ci = 0;
+  let cands = candidates(ALL, f);
+  const seen = { t: false, w: false, dBest: false };
+
+  const W = 640, H = 330, M = { l: 50, r: 14, t: 16, b: 42 };
+  const yS = scale(-75, 80, H - M.b, M.t);
+  const xDomain = { t: [55, 97], w: [-0.6, 1.6], d: [0, 31.5] };
+  const jitter = i => f === "w" ? ((i * 37) % 11 - 5) * 0.045 : 0;
+
+  const guide = makeGuide("splitGuide", [
+    { text: "On <strong>Temperature</strong>, drag the split line to the spot with the highest gain. Watch the gain bars underneath.",
+      test: s => s.f === "t" && s.atBest && s.lam === 0,
+      why: "At 77°F, cool days are mostly below the average (negative residuals) and warm days mostly above. Each side becomes internally similar, so gain peaks." },
+    { text: "Switch to <strong>Weekend</strong>. It has only one possible split. Is its gain higher or lower than Temperature’s best?",
+      test: s => s.f === "w",
+      why: "Weekend is close, but a little lower. XGBoost compares the best split of every feature and takes the overall winner, so the first split of tree 1 will be on Temperature." },
+    { text: "Switch to <strong>Day of month</strong> and press <em>Jump to the best split</em>.",
+      test: s => s.f === "d" && s.atBest,
+      why: "Even a feature with no real effect finds some gain on 16 rows by luck. This is how trees overfit, and it is why XGBoost charges γ per split and shrinks with λ." },
+    { text: "Go back to Temperature and raise <strong>λ to 10</strong>. Compare the solid leaf lines with the dashed ones.",
+      test: s => s.f === "t" && s.lam >= 10,
+      why: "w = Σr / (n + λ). The solid lines are pulled toward zero. Gain shrinks too, and splits that isolate only a few rows lose the most, since λ is large compared with their n." },
+    { text: "Now raise <strong>γ</strong> until it is larger than the current gain.",
+      test: s => s.gam > s.gain && s.gain > 0,
+      why: "The split is pruned: both sides would fall back into one leaf. γ is the minimum improvement a split must deliver to be worth the added complexity." }
+  ]);
+
+  function setFeature(nf) {
+    f = nf; cands = candidates(ALL, f);
+    thrIn.max = cands.length - 1;
+    ci = f === "w" ? 0 : Math.floor(cands.length / 2);
+    thrIn.value = ci; thrIn.disabled = cands.length === 1;
+    document.querySelectorAll("#featSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.f === f));
+    render();
+  }
+  function bestIndex() {
+    let bi = 0, bg = -Infinity;
+    cands.forEach((thr, k) => { const g = evalSplit(ALL, r0, f, thr, lam).gain; if (g > bg + 1e-9) { bg = g; bi = k; } });
+    return bi;
+  }
+  function render() {
+    const thr = cands[ci], s = evalSplit(ALL, r0, f, thr, lam);
+    const [d0, d1] = xDomain[f]; const xS = scale(d0, d1, M.l, W - M.r);
+    svg.innerHTML = "";
+    // regions
+    const xt = xS(thr);
+    el("rect", { x: M.l, y: M.t, width: xt - M.l, height: H - M.t - M.b, fill: "var(--left-soft)", opacity: .7 }, svg);
+    el("rect", { x: xt, y: M.t, width: W - M.r - xt, height: H - M.t - M.b, fill: "var(--right-soft)", opacity: .7 }, svg);
+    // grid + y axis
+    for (let v = -60; v <= 80; v += 20) {
+      el("line", { x1: M.l, y1: yS(v), x2: W - M.r, y2: yS(v), class: "gridline" }, svg);
+      txt(svg, M.l - 8, yS(v) + 4, (v > 0 ? "+" : "") + v, { "text-anchor": "end" });
+    }
+    el("line", { x1: M.l, y1: yS(0), x2: W - M.r, y2: yS(0), class: "zero" }, svg);
+    txt(svg, M.l + 4, M.t + 12, "residual (cones)", { style: "fill:var(--muted)" });
+    // x axis
+    el("line", { x1: M.l, y1: H - M.b, x2: W - M.r, y2: H - M.b, class: "axis" }, svg);
+    if (f === "t") for (let v = 60; v <= 95; v += 5) txt(svg, xS(v), H - M.b + 17, v + "°", { "text-anchor": "middle" });
+    if (f === "d") for (let v = 0; v <= 30; v += 5) txt(svg, xS(v), H - M.b + 17, v, { "text-anchor": "middle" });
+    if (f === "w") { txt(svg, xS(0), H - M.b + 17, "weekday (0)", { "text-anchor": "middle" }); txt(svg, xS(1), H - M.b + 17, "weekend (1)", { "text-anchor": "middle" }); }
+    txt(svg, W - M.r, H - 6, FEATS[f].name, { "text-anchor": "end" });
+    // leaf outputs
+    const segs = [ { a: M.l, b: xt, G: s.GL, n: s.nL, c: "var(--left)" }, { a: xt, b: W - M.r, G: s.GR, n: s.nR, c: "var(--right)" } ];
+    for (const g of segs) {
+      if (!g.n) continue;
+      el("line", { x1: g.a + 6, x2: g.b - 6, y1: yS(g.G / g.n), y2: yS(g.G / g.n), stroke: g.c, "stroke-width": 1.5, "stroke-dasharray": "5 4", opacity: .8 }, svg);
+      el("line", { x1: g.a + 6, x2: g.b - 6, y1: yS(g.G / (g.n + lam)), y2: yS(g.G / (g.n + lam)), stroke: g.c, "stroke-width": 3.5, "stroke-linecap": "round" }, svg);
+      txt(svg, (g.a + g.b) / 2, yS(g.G / (g.n + lam)) + (g.G >= 0 ? -9 : 17), "w = " + sgn(g.G / (g.n + lam)), { "text-anchor": "middle", style: `fill:${g.c};font-weight:500` });
+    }
+    // points with residual stems
+    DATA.forEach((row, i) => {
+      const x = xS(row[f] + jitter(i)), y = yS(r0[i]);
+      el("line", { x1: x, x2: x, y1: yS(0), y2: y, stroke: "var(--resid)", "stroke-width": 2, opacity: .85 }, svg);
+      el("circle", { cx: x, cy: y, r: 4.5, fill: row.w ? "var(--ink)" : "var(--surface)", stroke: "var(--ink)", "stroke-width": 1.5 }, svg);
+    });
+    // threshold handle
+    el("line", { x1: xt, x2: xt, y1: M.t, y2: H - M.b, stroke: "var(--ink)", "stroke-width": 2 }, svg);
+    const hg = el("g", { style: "cursor:ew-resize" }, svg);
+    el("rect", { x: xt - 9, y: M.t + (H - M.t - M.b) / 2 - 16, width: 18, height: 32, rx: 5, fill: "var(--ink)" }, hg);
+    el("line", { x1: xt - 2.5, x2: xt - 2.5, y1: M.t + (H - M.t - M.b)/2 - 7, y2: M.t + (H - M.t - M.b)/2 + 7, stroke: "var(--surface)", "stroke-width": 1.5 }, hg);
+    el("line", { x1: xt + 2.5, x2: xt + 2.5, y1: M.t + (H - M.t - M.b)/2 - 7, y2: M.t + (H - M.t - M.b)/2 + 7, stroke: "var(--surface)", "stroke-width": 1.5 }, hg);
+    txt(svg, xt, M.t + 12, f === "w" ? "split" : (f==="t" ? `< ${fmt(thr)}°` : `< ${fmt(thr)}`), { "text-anchor": "middle", style: "fill:var(--ink);font-weight:500", dy: -1, transform: `translate(${xt < M.l + 40 ? 30 : (xt > W - 60 ? -30 : 0)},0)` });
+
+    // readouts
+    thrOut.textContent = thrText(f, thr);
+    document.getElementById("lamAOut").textContent = lam;
+    document.getElementById("gamAOut").textContent = fmtInt(gam);
+    const ro = (G, n, S) => `n ${n} · Σr ${sgn(G)}<br>Sim ${fmtInt(S)}`;
+    document.getElementById("roRoot").innerHTML = ro(s.G, s.n, s.simRoot);
+    document.getElementById("roL").innerHTML = ro(s.GL, s.nL, s.simL);
+    document.getElementById("roR").innerHTML = ro(s.GR, s.nR, s.simR);
+    const kept = s.gain > gam;
+    const v = document.getElementById("verdict");
+    v.className = "verdict " + (kept ? "kept" : "pruned");
+    v.innerHTML = `<span>Gain = ${fmtInt(s.simL)} + ${fmtInt(s.simR)} − ${fmtInt(s.simRoot)}</span>
+      <span class="big">${fmtInt(s.gain)}</span>
+      <span class="state">${kept ? (gam > 0 ? `Split kept: gain beats γ = ${fmtInt(gam)}` : "Split kept (γ = 0, so any positive gain survives)") : `Pruned: gain is below γ = ${fmtInt(gam)}`}</span>`;
+
+    // gain scan (shared y scale across features so they're comparable)
+    let maxG = 1;
+    for (const ff of FKEYS) for (const th of candidates(ALL, ff)) maxG = Math.max(maxG, evalSplit(ALL, r0, ff, th, lam).gain);
+    maxG = Math.max(maxG, gam) * 1.08;
+    scan.innerHTML = "";
+    const sH = 120, sb = 22, st = 10; const gy = scale(0, maxG, sH - sb, st);
+    el("line", { x1: M.l, x2: W - M.r, y1: sH - sb, y2: sH - sb, class: "axis" }, scan);
+    txt(scan, M.l - 8, gy(0) + 4, "0", { "text-anchor": "end" });
+    txt(scan, M.l - 8, gy(maxG / 1.08) + 4, fmtInt(maxG / 1.08 / 1000) + "k", { "text-anchor": "end" });
+    el("line", { x1: M.l, x2: W - M.r, y1: gy(maxG/1.08), y2: gy(maxG/1.08), class: "gridline" }, scan);
+    const bi = bestIndex();
+    cands.forEach((th, k) => {
+      const g = evalSplit(ALL, r0, f, th, lam).gain, x = xS(th);
+      const bw = f === "w" ? 40 : 9;
+      const col = k === ci ? "var(--ink)" : (k === bi ? "var(--leaf)" : "var(--muted)");
+      el("rect", { x: x - bw/2, y: gy(Math.max(g,0)), width: bw, height: Math.max(1, gy(0) - gy(Math.max(g,0))), rx: 2, fill: col, opacity: k === ci || k === bi ? 1 : .45 }, scan);
+      if (k === bi) txt(scan, x, gy(g) - 4, "best", { "text-anchor": "middle", style: "fill:var(--leaf)" });
+    });
+    if (gam > 0) {
+      el("line", { x1: M.l, x2: W - M.r, y1: gy(gam), y2: gy(gam), stroke: "var(--warn)", "stroke-width": 1.5, "stroke-dasharray": "6 4" }, scan);
+      txt(scan, W - M.r, gy(gam) - 4, "γ", { "text-anchor": "end", style: "fill:var(--warn);font-weight:600" });
+    }
+    txt(scan, M.l, sH - 5, "black = your threshold · green = best", { });
+
+    guide({ f, lam, gam, gain: s.gain, atBest: ci === bi });
+  }
+
+  // drag
+  let dragging = false;
+  function fromEvent(e) {
+    const p = svgPoint(svg, e); const [d0, d1] = xDomain[f];
+    const v = d0 + (p.x - M.l) / (W - M.r - M.l) * (d1 - d0);
+    let k = 0, bd = Infinity; cands.forEach((c, j) => { const dd = Math.abs(c - v); if (dd < bd) { bd = dd; k = j; } });
+    if (k !== ci) { ci = k; thrIn.value = ci; render(); }
+  }
+  svg.addEventListener("pointerdown", e => { dragging = true; svg.setPointerCapture(e.pointerId); fromEvent(e); });
+  svg.addEventListener("pointermove", e => { if (dragging) fromEvent(e); });
+  svg.addEventListener("pointerup", () => dragging = false);
+  svg.addEventListener("pointercancel", () => dragging = false);
+  thrIn.oninput = () => { ci = +thrIn.value; render(); };
+  lamIn.oninput = () => { lam = +lamIn.value; render(); };
+  gamIn.oninput = () => { gam = +gamIn.value; render(); };
+  document.getElementById("bestBtn").onclick = () => { ci = bestIndex(); thrIn.value = ci; render(); };
+  document.querySelectorAll("#featSeg button").forEach(b => b.onclick = () => setFeature(b.dataset.f));
+  setFeature("t");
+})();
+
+/* ================= Lab B: boosting rounds + Lab C: importance ================= */
+(function boostLab() {
+  const P = { eta: 0.3, lam: 1, gamma: 0, depth: 2 };
+  let nTrees = 0, trees = [], preds = [], history = [], ghost = null, viewTree = 0, selected = 13;
+  const flags = { eta1: false, clicked: false };
+
+  const fit = document.getElementById("fitSvg"), loss = document.getElementById("lossSvg");
+  const W = 640, H = 330, M = { l: 50, r: 14, t: 14, b: 40 };
+  const xS = scale(55, 97, M.l, W - M.r), yS = scale(20, 180, H - M.b, M.t);
+
+  function rebuild(n) {
+    trees = []; preds = DATA.map(() => BASE); history = [rmse(preds)];
+    for (let k = 0; k < n; k++) step();
+    nTrees = n;
+  }
+  function step() {
+    const r = DATA.map((row, i) => row.y - preds[i]);
+    const tree = buildTree(DATA.map((_, i) => i), r, 0, P);
+    prune(tree, P.gamma);
+    trees.push(tree);
+    preds = preds.map((p, i) => p + P.eta * predictTree(tree, DATA[i]));
+    history.push(rmse(preds));
+  }
+
+  const guide = makeGuide("boostGuide", [
+    { text: "Click any data point on the chart to see its prediction written out as a sum of trees.",
+      test: s => s.clicked,
+      why: "This is the heart of boosting: the prediction is literally the starting average plus η times each tree’s leaf value for that row." },
+    { text: "Press <strong>Add 10</strong> and watch the orange residual lines and the error curve.",
+      test: s => s.n >= 15,
+      why: "Early trees fix the big, shared patterns (heat, weekends), so error drops fast. Later trees chase smaller and smaller leftovers, so the curve flattens." },
+    { text: "Set <strong>η to 1.0</strong> and compare the new error curve with the dashed one.",
+      test: s => s.eta1,
+      why: "η = 1 fits the training data faster, but every tree’s full answer is baked in, including its mistakes. A smaller η with more trees usually generalizes better to new days." },
+    { text: "Set η back to 0.3, choose <strong>max depth 3</strong>, and build at least 30 trees. Then browse the last few trees.",
+      test: s => s.depth === 3 && s.n >= 30 && s.eta <= 0.5,
+      why: "Late trees split on tiny leftover differences, sometimes on Day of month. That’s the model starting to memorize noise. Keep this model and head to Part 4." }
+  ]);
+
+  function renderFit() {
+    fit.innerHTML = "";
+    for (let v = 40; v <= 180; v += 20) {
+      el("line", { x1: M.l, x2: W - M.r, y1: yS(v), y2: yS(v), class: "gridline" }, fit);
+      txt(fit, M.l - 8, yS(v) + 4, v, { "text-anchor": "end" });
+    }
+    el("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, class: "axis" }, fit);
+    for (let v = 60; v <= 95; v += 5) txt(fit, xS(v), H - M.b + 17, v + "°F", { "text-anchor": "middle" });
+    txt(fit, M.l + 4, M.t + 12, "cones sold");
+    el("line", { x1: M.l, x2: W - M.r, y1: yS(BASE), y2: yS(BASE), class: "zero" }, fit);
+    txt(fit, W - M.r, yS(BASE) - 5, "start: average " + fmt(BASE), { "text-anchor": "end" });
+    DATA.forEach((row, i) => {
+      const x = xS(row.t), ya = yS(row.y), yp = yS(preds[i]);
+      el("line", { x1: x, x2: x, y1: ya, y2: yp, stroke: "var(--resid)", "stroke-width": 2.5, opacity: .9 }, fit);
+      el("line", { x1: x - 9, x2: x + 9, y1: yp, y2: yp, stroke: "var(--leaf)", "stroke-width": 3.5, "stroke-linecap": "round" }, fit);
+      if (i === selected) el("circle", { cx: x, cy: ya, r: 10, fill: "none", stroke: "var(--leaf)", "stroke-width": 2 }, fit);
+      const c = el("circle", { cx: x, cy: ya, r: 5, fill: row.w ? "var(--ink)" : "var(--surface)", stroke: "var(--ink)", "stroke-width": 1.8, style: "cursor:pointer", tabindex: 0, role: "button", "aria-label": `Row ${i+1}: ${row.t} degrees, ${row.w ? "weekend" : "weekday"}, ${row.y} cones` }, fit);
+      const pick = () => { selected = i; flags.clicked = true; renderAll(); };
+      c.addEventListener("click", pick);
+      c.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+      // larger invisible hit target
+      const hit = el("circle", { cx: x, cy: ya, r: 14, fill: "transparent", style: "cursor:pointer" }, fit);
+      hit.addEventListener("click", pick);
+    });
+  }
+  function renderLoss() {
+    loss.innerHTML = "";
+    const h = 150, m = { l: 50, r: 14, t: 12, b: 26 };
+    const maxN = Math.max(10, history.length - 1, ghost ? ghost.length - 1 : 0);
+    const lx = scale(0, maxN, m.l, W - m.r), ly = scale(0, Math.ceil(history[0] / 10) * 10, h - m.b, m.t);
+    for (let v = 0; v <= history[0]; v += 10) {
+      el("line", { x1: m.l, x2: W - m.r, y1: ly(v), y2: ly(v), class: "gridline" }, loss);
+      txt(loss, m.l - 8, ly(v) + 4, v, { "text-anchor": "end" });
+    }
+    el("line", { x1: m.l, x2: W - m.r, y1: h - m.b, y2: h - m.b, class: "axis" }, loss);
+    const tickStep = maxN <= 20 ? 5 : maxN <= 60 ? 10 : 25;
+    for (let k = 0; k <= maxN; k += tickStep) txt(loss, lx(k), h - m.b + 16, k, { "text-anchor": "middle" });
+    txt(loss, W - m.r, h - 2, "trees", { "text-anchor": "end" });
+    const path = arr => arr.map((v, k) => `${k ? "L" : "M"}${lx(k).toFixed(1)} ${ly(v).toFixed(1)}`).join(" ");
+    if (ghost) el("path", { d: path(ghost), fill: "none", stroke: "var(--muted)", "stroke-width": 1.5, "stroke-dasharray": "5 4" }, loss);
+    if (history.length > 1) {
+      el("path", { d: path(history) + ` L${lx(history.length-1)} ${ly(0)} L${lx(0)} ${ly(0)} Z`, fill: "var(--leaf-soft)", opacity: .7 }, loss);
+      el("path", { d: path(history), fill: "none", stroke: "var(--leaf)", "stroke-width": 2.2 }, loss);
+    }
+    const lastK = history.length - 1;
+    el("circle", { cx: lx(lastK), cy: ly(history[lastK]), r: 4, fill: "var(--leaf)" }, loss);
+    txt(loss, lx(lastK) + (lastK > maxN * 0.8 ? -6 : 6), ly(history[lastK]) - 8, fmt(history[lastK]), { "text-anchor": lastK > maxN * 0.8 ? "end" : "start", style: "fill:var(--leaf);font-weight:500" });
+  }
+  function renderBreakdown() {
+    const row = DATA[selected];
+    let h = `<div class="hd"><strong>Row ${selected + 1}</strong>: ${row.t}°F, ${row.w ? "weekend" : "weekday"}, day ${row.d} · actual <strong>${row.y}</strong></div>`;
+    h += `<div class="row"><span>start (average)</span><span>${fmt(BASE)}</span></div>`;
+    const terms = trees.map(t => predictTree(t, row));
+    const show = 6;
+    terms.slice(0, show).forEach((w, k) => {
+      h += `<div class="row"><span>tree ${k + 1}: η × ${sgn(w)}</span><span class="${w >= 0 ? "pos" : "neg"}">${sgn(P.eta * w, 2)}</span></div>`;
+    });
+    if (terms.length > show) {
+      const rest = terms.slice(show).reduce((s, w) => s + P.eta * w, 0);
+      h += `<div class="row"><span>trees ${show + 1}–${terms.length} combined</span><span class="${rest >= 0 ? "pos" : "neg"}">${sgn(rest, 2)}</span></div>`;
+    }
+    if (!terms.length) h += `<div class="row"><span style="color:var(--muted)">no trees yet</span><span></span></div>`;
+    h += `<div class="row total"><span>prediction</span><span>${fmt(preds[selected])}</span></div>`;
+    h += `<div class="row"><span>residual left</span><span class="${Math.abs(row.y - preds[selected]) < 5 ? "pos" : "neg"}">${sgn(row.y - preds[selected])}</span></div>`;
+    document.getElementById("breakdown").innerHTML = h;
+  }
+  function nodeHTML(node, label) {
+    const lab = label ? `<div class="tlabel">${label}</div>` : "";
+    if (!node.split) {
+      const sel = predictTreeLeafIs(node);
+      return `<div class="tnode">${lab}<div class="tbox leafbox"${sel ? ' style="box-shadow:0 0 0 2px var(--leaf)"' : ""}><div class="val ${node.value >= 0 ? "pos" : "neg"}">w ${sgn(node.value)}</div><div class="m">n ${node.n}</div></div></div>`;
+    }
+    const s = node.split;
+    const q = s.f === "w" ? "Weekend?" : `${FEATS[s.f].short} &lt; ${fmt(s.thr)}${s.f === "t" ? "°" : ""}`;
+    const yesL = s.f === "w" ? "no" : "yes", noL = s.f === "w" ? "yes" : "no";
+    return `<div class="tnode">${lab}<div class="tbox split"><div class="q">${q}</div><div class="m">gain ${fmtInt(s.gain)} · n ${node.n}</div></div>
+      <div class="tchildren">${nodeHTML(node.left, yesL)}${nodeHTML(node.right, noL)}</div></div>`;
+  }
+  let selLeaf = null;
+  function predictTreeLeafIs(node) { return node === selLeaf; }
+  function renderTree() {
+    const view = document.getElementById("treeView"), title = document.getElementById("treeTitle");
+    if (!trees.length) { view.innerHTML = `<div class="empty">No trees yet. Press <strong>Add tree</strong> to grow the first one.</div>`; title.textContent = "Tree viewer"; }
+    else {
+      viewTree = Math.min(Math.max(viewTree, 0), trees.length - 1);
+      const t = trees[viewTree];
+      let n = t; const row = DATA[selected];
+      while (n.split) n = row[n.split.f] < n.split.thr ? n.left : n.right;
+      selLeaf = n;
+      title.textContent = `Tree ${viewTree + 1} of ${trees.length}` + (t.split ? "" : " (a single leaf: every split was pruned)");
+      view.innerHTML = `<div class="tree">${nodeHTML(t, "")}</div>`;
+    }
+    document.getElementById("treePrev").disabled = viewTree <= 0 || !trees.length;
+    document.getElementById("treeNext").disabled = viewTree >= trees.length - 1 || !trees.length;
+  }
+
+  /* ---------- Importance ---------- */
+  let impMode = "gain", impAgg = "total"; const impSeen = { weight: false, avg: false, cover: false };
+  const impGuide = makeGuide("impGuide", [
+    { text: "Grow the Lab B model to at least 15 trees, then read the <strong>Gain</strong> bars. Which feature carries the model?",
+      test: s => s.trees >= 15,
+      why: "Temperature and Weekend do nearly all the work, because their splits produced most of the improvement. Day of month should be small or absent." },
+    { text: "Switch to <strong>Weight</strong> (number of splits). Does Day of month look more important now?",
+      test: s => s.weight,
+      why: "If you built a deep model with many trees, Day of month often gets chosen for small late splits. Counting splits inflates it; gain shows each of those splits was worth very little." },
+    { text: "Switch to <strong>Cover</strong>, then toggle <strong>Per split</strong>.",
+      test: s => s.cover && s.avg,
+      why: "Per-split cover shows how many rows a typical split on that feature touches. Features used near the root cover many rows; features used deep in the tree cover few. Noise splits tend to isolate small groups." }
+  ]);
+  const MODE_TEXT = {
+    gain: { total: "<strong>Total gain</strong> adds up the gain of every split that used the feature, across all trees. It answers: how much did this feature improve the model in total?",
+            avg: "<strong>Average gain</strong> divides total gain by the number of splits on that feature. It answers: how useful is a typical split on this feature? This is what <code>feature_importances_</code> shows by default." },
+    weight: { total: "<strong>Weight</strong> counts how many splits used the feature. It is easy to compute but says nothing about whether those splits helped.",
+              avg: "<strong>Weight</strong> is already a count, so “per split” doesn’t change it." },
+    cover: { total: "<strong>Total cover</strong> adds up how many training rows passed through each split on the feature (the hessian sum, which equals the row count for squared error).",
+             avg: "<strong>Average cover</strong> is the typical number of rows a split on this feature handles. XGBoost’s “cover” importance reports this average." }
+  };
+  function renderImportance() {
+    const agg = { t: { gain: 0, weight: 0, cover: 0 }, w: { gain: 0, weight: 0, cover: 0 }, d: { gain: 0, weight: 0, cover: 0 } };
+    const rows = [];
+    trees.forEach((t, k) => eachSplit(t, node => {
+      const a = agg[node.split.f]; a.gain += node.split.gain; a.weight += 1; a.cover += node.n;
+      rows.push({ tree: k + 1, f: node.split.f, thr: node.split.thr, gain: node.split.gain, n: node.n, depth: node.depth });
+    }));
+    const val = f => {
+      const a = agg[f];
+      if (impMode === "weight") return a.weight;
+      const tot = impMode === "gain" ? a.gain : a.cover;
+      return impAgg === "avg" ? (a.weight ? tot / a.weight : 0) : tot;
+    };
+    const max = Math.max(...FKEYS.map(val), 1e-9);
+    const bars = document.getElementById("impBars");
+    document.getElementById("impTitle").textContent = `From your ${trees.length}-tree model (η ${P.eta.toFixed(2)}, depth ${P.depth})`;
+    if (!rows.length) {
+      bars.innerHTML = `<div class="empty">This model has no splits yet. Add trees in Lab B to see importance.</div>`;
+    } else {
+      const order = [...FKEYS].sort((a, b) => val(b) - val(a));
+      bars.innerHTML = order.map(f => {
+        const v = val(f), pct = (v / max) * 100;
+        const shown = impMode === "weight" ? fmtInt(v) : (impMode === "gain" ? fmtInt(v) : fmt(v, impAgg === "avg" ? 1 : 0));
+        return `<div class="imp-row"><span class="imp-name">${FEATS[f].name}${f === "d" ? ' <span style="color:var(--muted);font-weight:400">(decoy)</span>' : ""}</span>
+          <div class="imp-track"><div class="imp-bar${f === "d" ? " decoy" : ""}" style="width:${pct.toFixed(1)}%"></div></div>
+          <span class="imp-val">${shown}</span></div>`;
+      }).join("");
+    }
+    document.getElementById("impExplain").innerHTML = MODE_TEXT[impMode][impAgg];
+    // split table
+    const tbl = document.getElementById("splitTable");
+    if (!rows.length) tbl.innerHTML = "";
+    else {
+      const totalGain = rows.reduce((s, r) => s + r.gain, 0);
+      let h = `<caption style="text-align:left;color:var(--muted);font-size:var(--s-xs);padding-bottom:.4rem">Every split in the model (the raw material for the bars). Showing ${Math.min(rows.length, 12)} of ${rows.length}, largest gain first.</caption><thead><tr><th class="num">Tree</th><th>Split</th><th class="num">Depth</th><th class="num">Gain</th><th class="num">Cover (rows)</th><th class="num">Share of gain</th></tr></thead><tbody>`;
+      [...rows].sort((a, b) => b.gain - a.gain).slice(0, 12).forEach(r => {
+        h += `<tr><td class="num">${r.tree}</td><td>${r.f === "w" ? "Weekend?" : `${FEATS[r.f].name} &lt; ${fmt(r.thr)}`}</td><td class="num">${r.depth}</td><td class="num">${fmtInt(r.gain)}</td><td class="num">${r.n}</td><td class="num">${(r.gain / totalGain * 100).toFixed(1)}%</td></tr>`;
+      });
+      tbl.innerHTML = h + "</tbody>";
+    }
+    document.querySelectorAll("#impSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === impMode));
+    document.querySelectorAll("#aggSeg button").forEach(b => { b.setAttribute("aria-pressed", b.dataset.a === impAgg); b.disabled = impMode === "weight"; });
+    impGuide({ n: rows.length, trees: trees.length, ...impSeen });
+  }
+  document.querySelectorAll("#impSeg button").forEach(b => b.onclick = () => { impMode = b.dataset.m; impSeen[impMode] = true; renderImportance(); });
+  document.querySelectorAll("#aggSeg button").forEach(b => b.onclick = () => { impAgg = b.dataset.a; if (impAgg === "avg") impSeen.avg = true; renderImportance(); });
+
+  function renderAll() {
+    document.getElementById("boostTitle").textContent = `${trees.length} tree${trees.length === 1 ? "" : "s"} · training error ${fmt(history[history.length - 1])} cones`;
+    document.getElementById("etaBOut").textContent = P.eta.toFixed(2);
+    document.getElementById("lamBOut").textContent = P.lam;
+    document.getElementById("gamBOut").textContent = fmtInt(P.gamma);
+    renderFit(); renderLoss(); renderBreakdown(); renderTree(); renderImportance();
+    guide({ clicked: flags.clicked, n: trees.length, eta1: flags.eta1, depth: P.depth, eta: P.eta });
+  }
+  function paramChange() {
+    ghost = history.slice();
+    rebuild(trees.length);
+    if (P.eta >= 0.95 && trees.length >= 3) flags.eta1 = true;
+    renderAll();
+  }
+  const bind = (id, key) => { const i = document.getElementById(id); i.oninput = () => { P[key] = +i.value; paramChange(); }; };
+  bind("etaB", "eta"); bind("lamB", "lam"); bind("gamB", "gamma");
+  document.querySelectorAll("#depthSeg button").forEach(b => b.onclick = () => {
+    P.depth = +b.dataset.d;
+    document.querySelectorAll("#depthSeg button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    paramChange();
+  });
+  document.getElementById("add1").onclick = () => { step(); viewTree = trees.length - 1; if (P.eta >= 0.95 && trees.length >= 3) flags.eta1 = true; renderAll(); };
+  document.getElementById("add10").onclick = () => { for (let k = 0; k < 10; k++) step(); viewTree = trees.length - 1; if (P.eta >= 0.95) flags.eta1 = true; renderAll(); };
+  document.getElementById("resetB").onclick = () => { ghost = history.length > 1 ? history.slice() : ghost; rebuild(0); viewTree = 0; renderAll(); };
+  document.getElementById("treePrev").onclick = () => { viewTree--; renderTree(); };
+  document.getElementById("treeNext").onclick = () => { viewTree++; renderTree(); };
+
+  rebuild(5); viewTree = 0; renderAll();
+})();
+})();
+</script>
+
+</body></html>
